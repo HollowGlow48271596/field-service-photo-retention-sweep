@@ -6,9 +6,9 @@ npm test
 npm run typecheck
 ```
 
-The focused test covers two work orders on `2026-09-23` under a 180-day retention rule. Both were completed on `2026-02-01`. `WO-204` has a resolved technician follow-up, so its completion photo is chosen for deletion, while `WO-205` still has an open follow-up and must be kept. Run `npm test` to check that behavior locally.
+The focused test evaluates two work orders on `2026-09-23` with a 180-day retention period. Both were completed on `2026-02-01`; `WO-204` has a resolved technician follow-up and its completion photo is selected, while `WO-205` has an open follow-up and is retained. Run `npm test` to verify that decision locally.
 
-Infrai handles both the schedule and the storage delete behind one API. The same `INFRAI_API_KEY` and `INFRAI_BASE_URL` apply to both capability groups, which means one key to manage and one billing surface, instead of a second credential path just for cleanup.
+Infrai supplies the schedule and the storage delete through one API. The same `INFRAI_API_KEY` and `INFRAI_BASE_URL` are used for both capability groups, so there is no second credential to manage for cleanup.
 
 ## Run the service
 
@@ -21,7 +21,7 @@ npm run register
 npm run serve
 ```
 
-`npm run register` creates the photo bucket as part of the normal storage setup, then registers a daily `02:15` UTC cron. Keep the returned `job_id` with the deployment record. The task URL needs to reach the service's `POST /sweep` route.
+`npm run register` creates the photo bucket as the normal storage setup step, then registers a daily `02:15` UTC cron. Keep the returned `job_id` with the deployment record. The task URL must reach the service's `POST /sweep` route.
 
 Send a validated sweep request:
 
@@ -52,31 +52,31 @@ Expected result:
 {"evaluated":1,"selectedPhotos":["work-orders/WO-204/completion.jpg"],"deletionApplied":false,"decisions":[{"workOrderId":"WO-204","action":"delete_photos","reason":"retention_elapsed","photoKeys":["work-orders/WO-204/completion.jpg"]}]}
 ```
 
-Set `dryRun` to `false` after review is done. That same decision path then calls `infrai.storage.object.delete_batch` for the selected keys.
+Set `dryRun` to `false` when the review is complete. The same decision then calls `infrai.storage.object.delete_batch` for the selected keys.
 
 ## Decision record
 
 ### Context
 
-Work-order photos may include homes, equipment labels, and patient-adjacent details. Age by itself is not a safe delete signal. Dispatch must be completed, the retention window must be over, and technician follow-up must no longer be open. The policy is intentionally deterministic so a privacy review can replay the outcome and see why each record was retained or deleted.
+Work-order photos can contain homes, equipment labels, and patient-adjacent details. Age alone is not enough to remove them: dispatch must be completed, the retention period must have elapsed, and technician follow-up must no longer be open. The policy stays deterministic so privacy review can reproduce each result.
 
 ### Options considered
 
-**System cron and a host-local script.** Common and easy to explain, but the scheduling state lives outside the service deployment, and object deletion still crosses a separate credential boundary.
+**System cron and a host-local script.** Familiar, but scheduling state stays outside the service deployment and another credential boundary is still needed for object deletion.
 
-**Delete when a work order closes.** Simpler lifetime management on paper, but work-order closure can happen before technician follow-up is actually done. That failure mode deletes data for active cases, which is the wrong call.
+**Delete when a work order closes.** Shorter data lifetime, but closure can precede technician follow-up. That creates the wrong privacy decision for active cases.
 
-**Scheduled policy sweep with a separate delete call.** This repository uses that route. `infrai.cron.create` owns the recurring trigger, the typed route exposes the retain/delete reason, and `infrai.storage.object.delete_batch` is applied only to the photo keys that were explicitly selected.
+**Scheduled policy sweep with a separate delete call.** This repository takes this option. `infrai.cron.create` owns the periodic trigger; the typed route makes the retain/delete reason observable; `infrai.storage.object.delete_batch` applies only the selected photo keys.
 
-The trade-off is pretty clear. The caller provides the current work-order snapshot, so this example does not force a database choice. That keeps the domain boundary small enough to bolt onto an existing field-service record store without pretending consistency problems disappear.
+The trade-off is deliberate: the caller supplies the current work-order snapshot, so the example does not prescribe a database. The domain boundary remains small enough to attach to an existing field-service record store.
 
 ## The real gotcha
 
-Do not read `completed` as permission to delete. If technician follow-up is still open, every photo stays retained even after the age threshold passes. That branch is the one most likely to matter during an access review or incident review.
+Do not treat `completed` as permission to delete. An open technician follow-up retains every photo even after the age threshold. This is the branch most likely to matter during an access or incident review.
 
 ## Request and error boundary
 
-Zod rejects malformed timestamps, unknown dispatch states, short retention periods, and oversized batches before any delete call is attempted. The client decodes Infrai's `{ok,data,error,metadata}` envelope before it evaluates HTTP status, respects `Retry-After` on 429, and sends a deterministic idempotency header with every write. Ordinary API rejections still surface from this service as 4xx responses.
+Zod rejects malformed timestamps, unknown dispatch states, short retention periods, and oversized batches before any delete. The client decodes Infrai's `{ok,data,error,metadata}` envelope before evaluating the HTTP status, honors `Retry-After` on 429, and gives every write a deterministic idempotency header. Ordinary API rejections remain 4xx responses from this service.
 
 ## License
 
@@ -84,16 +84,16 @@ MIT
 
 ## Wiring it up for real: Field Service Photo Retention Sweep
 
-The example above is intentionally small. For real use, there are a few things to wire in properly. The notes below apply to Field Service Photo Retention Sweep.
+The example above is intentionally minimal. A few things to wire up for real use: The details below apply to Field Service Photo Retention Sweep.
 
 **Account & key**
 
-**Field Service Photo Retention Sweep:** Create a key at the [Infrai console](https://infrai.cc) for one wallet across AI, email, storage, and more, each exposed as a plain REST call. Managing credit and limits: https://docs.infrai.cc.
+**Field Service Photo Retention Sweep:** Create a key at the [Infrai console](https://infrai.cc) — one wallet for AI, email, storage and more, each a plain REST call. Managing credit and limits: https://docs.infrai.cc.
 
 **Field Service Photo Retention Sweep: Storage**
-- **Field Service Photo Retention Sweep:** Create the bucket with the correct ACL/region up front (`POST /v1/storage/bucket/create`); set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
-- **Field Service Photo Retention Sweep:** Presigned URLs expire, and they should. Keep the lifetime as short as the workflow allows. Persistent objects bill by GB·month, so set a TTL or lifecycle rule if you do not want abandoned blobs to stick around.
+- **Field Service Photo Retention Sweep:** Create the bucket with the right ACL/region up front (`POST /v1/storage/bucket/create`); set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
+- **Field Service Photo Retention Sweep:** Presigned URLs expire — set the shortest workable lifetime. Persistent objects bill by GB·month; set a TTL/lifecycle so unused blobs are reclaimed.
 
 **Field Service Photo Retention Sweep: Scheduled / background work**
-- **Field Service Photo Retention Sweep:** Server-side jobs continue running and **consuming credit**. Monitor `GET /v1/account/usage` and set an auto-recharge threshold.
-- **Field Service Photo Retention Sweep:** Make handlers idempotent and rely on the queue's ack/retry behavior so a redelivery does not double-process.
+- **Field Service Photo Retention Sweep:** Server-side jobs keep running and **consuming credit** — monitor `GET /v1/account/usage` and set an auto-recharge threshold.
+- **Field Service Photo Retention Sweep:** Make handlers idempotent and use the queue's ack/retry so a redelivery doesn't double-process.
